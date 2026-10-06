@@ -1,4 +1,4 @@
-## Interface: 16001, 11509
+## Interface: 16001
 ## Title: RecipeProfit
 ## Notes: Hover a recipe to see reagent cost, crafted item price and profit. Scan button on the AH prices everything for the recipes you searched.
 ## Author: woodt
