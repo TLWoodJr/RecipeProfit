@@ -1,0 +1,16 @@
+## Interface: 16001, 11509
+## Title: RecipeProfit
+## Notes: Hover a recipe to see reagent cost, crafted item price and profit. Scan button on the AH prices everything for the recipes you searched.
+## Author: woodt
+## Version: @project-version@
+## Category-enUS: Auctions
+## X-Category: Auction/Economy
+## SavedVariables: RecipeProfitDB
+## Dependencies: Auctionator
+## OptionalDeps: LibCraftProfit-1.0, ForeverDungeonJournal
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibCraftProfit-1.0\lib.xml
+
+RecipeProfit.lua
