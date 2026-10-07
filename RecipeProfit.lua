@@ -279,7 +279,12 @@ local function addRecipeInfo(tooltip, parsed)
       if reagent.count > 1 then right = right .. " " .. DIM .. "(" .. money(reagent.price) .. " ea)|r" end
       if reagent.src == "vendor" then right = right .. " " .. DIM .. "vendor|r" end
       if reagent.stale then right = right .. " " .. RED .. Lib.StaleText(reagent.stale) .. "|r" end
+      if reagent.undercut then right = right .. " |cffff9933!|r" end
       tooltip:AddDoubleLine(left, right, 0.85, 0.85, 0.85, 1, 1, 1)
+      if reagent.undercut then
+        local u = reagent.undercut
+        tooltip:AddLine(("    |cffff9933! undercut: %d listed from %s, most at %s|r"):format(u.below, money(u.cheapest), money(u.market)))
+      end
     else
       tooltip:AddDoubleLine(left, "no price", 0.85, 0.85, 0.85, 1, 0.4, 0.4)
     end
@@ -303,7 +308,7 @@ local function addRecipeInfo(tooltip, parsed)
       0.85, 0.85, 0.85, unpack(WHITE))
     local r, g = recipe.profit >= 0 and 0.2 or 1, recipe.profit >= 0 and 1 or 0.3
     local label = recipe.missing > 0 and "Profit (incomplete)" or recipe.incomplete and "Profit (old prices)" or "Profit"
-    tooltip:AddDoubleLine(label, money(recipe.profit), 1, 1, 1, r, g, 0.2)
+    tooltip:AddDoubleLine(label, money(recipe.displayProfit), 1, 1, 1, r, g, 0.2)
   end
   if recipe.incomplete or (productID and not recipe.sell) then
     tooltip:AddLine("Click 'Price Recipes' at the AH to update prices.", 0.6, 0.6, 0.6, true)
