@@ -1,9 +1,8 @@
 -- RecipeProfit: reagent cost / crafted price / profit on recipe tooltips.
 --
--- Prices come from Auctionator through LibCraftProfit-1.0 (shared with
--- ProfessionProfit), so the numbers match Auctionator's "To Craft": reagents
--- at their vendor price when a vendor sells them, else their AH price.
--- "Price Recipes" searches the AH through Auctionator, which stores the prices.
+-- Prices come through LibCraftProfit-1.0 (shared with ProfessionProfit):
+-- Auctionator's vendor and AH prices first, gaps filled by the Scan button's
+-- searches, and reagents walked through their full listings when scanned.
 
 local ADDON = ...
 local Lib = LibStub("LibCraftProfit-1.0")
@@ -261,6 +260,28 @@ local GREY, WHITE = { 0.65, 0.65, 0.65 }, { 1, 1, 1 }
 
 local RED, DIM = "|cffff6666", "|cffa0a0a0"
 
+local scan -- a scan in progress (below): { loadTries, force, phase, done, total }
+
+-- Our own search answered for the item today (even "none listed").
+local function checkedToday(itemID)
+  local book = Lib.Book(itemID)
+  return book and date("%Y%m%d", book.t) == date("%Y%m%d")
+end
+
+-- An item with no price anywhere (vendor, Auctionator, our searches) that
+-- a scan hasn't already looked for today. Items nobody lists stay
+-- unpriced, so a scan today settles them.
+local function priceMissing(itemID)
+  return itemID ~= nil and not (Lib.VendorPrice(itemID) or Lib.SellPrice(itemID)) and not checkedToday(itemID)
+end
+
+local function needsPricing(recipe)
+  for _, reagent in ipairs(recipe.reagents) do
+    if priceMissing(reagent.id) then return true end
+  end
+  return priceMissing(recipe.productID)
+end
+
 local function addRecipeInfo(tooltip, parsed)
   tooltip:AddLine(" ")
   tooltip:AddLine("Recipe Profit", 1, 0.82, 0)
@@ -310,8 +331,10 @@ local function addRecipeInfo(tooltip, parsed)
     local label = recipe.missing > 0 and "Profit (incomplete)" or recipe.incomplete and "Profit (old prices)" or "Profit"
     tooltip:AddDoubleLine(label, money(recipe.displayProfit), 1, 1, 1, r, g, 0.2)
   end
-  if recipe.incomplete or (productID and not recipe.sell) then
-    tooltip:AddLine("Click 'Price Recipes' at the AH to update prices.", 0.6, 0.6, 0.6, true)
+  if scan then
+    tooltip:AddLine("Scanning prices...", 0.6, 0.6, 0.6, true)
+  elseif needsPricing(recipe) then
+    tooltip:AddLine("Some prices are missing: search for this recipe at the AH and click Scan.", 0.6, 0.6, 0.6, true)
   end
 end
 
@@ -519,129 +542,360 @@ local function learnBrowseNames(results)
 end
 
 ------------------------------------------------------------------------------
--- "Price Recipes": load every recipe in the current AH results, then search
--- the AH (through Auctionator) for all their reagents and crafted items.
+-- Scanning: the bar under the results list says when the recipes on screen
+-- are missing prices; its Scan button loads all of the results, then
+-- prices every reagent and crafted item those recipes use through
+-- LibCraftProfit (see startPricing), with the progress on the bar.
 ------------------------------------------------------------------------------
 
-local scan -- { loadTries, force } while the category's results load
-local scanButton
+local bar
+local startScan, stopScan -- defined below; the bar's button calls them
 
-local function setButtonText()
-  if not scanButton then return end
-  if scan then
-    scanButton:SetText(("Stop (loading %d)"):format(#(C_AuctionHouse.GetBrowseResults() or {})))
+local function createBar()
+  if bar or not AuctionHouseFrame then return end
+  -- Under the results list, in the space right of your gold, with the
+  -- Scan / Stop button at its right. Parented to the results so it only
+  -- shows on the Browse tab, and hidden unless the results hold recipes or
+  -- a scan is running.
+  local results = AuctionHouseFrame.BrowseResultsFrame or AuctionHouseFrame
+  local money = AuctionHouseFrame.MoneyFrameBorder
+
+  local button = CreateFrame("Button", "RecipeProfitScanButton", results, "UIPanelButtonTemplate")
+  button:SetSize(70, 20)
+  if money then
+    button:SetPoint("RIGHT", results, "RIGHT", -4, 0)
+    button:SetPoint("TOP", money, "TOP", 0, 0)
   else
-    scanButton:SetText("Price Recipes")
+    button:SetPoint("BOTTOMRIGHT", AuctionHouseFrame, "BOTTOMRIGHT", -8, 8)
   end
+  button:SetScript("OnClick", function()
+    -- With every price known, a scan only makes sense as a full one.
+    if scan then stopScan() else startScan(IsShiftKeyDown() or bar.allKnown) end
+  end)
+  button:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    if scan then
+      GameTooltip:AddLine("Stop scanning")
+    elseif bar.allKnown then
+      GameTooltip:AddLine("Full scan")
+      GameTooltip:AddLine("Search the AH again for the reagents and crafted items of every recipe in these results, for current prices.", 1, 1, 1, true)
+    else
+      GameTooltip:AddLine("Scan")
+      GameTooltip:AddLine("Search the AH for the reagents and crafted items of every recipe in these results. Items already priced today are skipped.", 1, 1, 1, true)
+      GameTooltip:AddLine("Shift-click to search everything again.", 0.7, 0.7, 0.7, true)
+    end
+    GameTooltip:Show()
+  end)
+  button:SetScript("OnLeave", GameTooltip_Hide)
+
+  bar = CreateFrame("StatusBar", "RecipeProfitScanBar", results)
+  bar:SetHeight(14)
+  if money then
+    bar:SetPoint("LEFT", money, "RIGHT", 12, 0)
+  else
+    bar:SetPoint("BOTTOMLEFT", AuctionHouseFrame, "BOTTOMLEFT", 200, 10)
+  end
+  bar:SetPoint("RIGHT", button, "LEFT", -6, 0)
+  bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+  bar:SetStatusBarColor(0.85, 0.65, 0.1)
+  local bg = bar:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints()
+  bg:SetColorTexture(0, 0, 0, 0.6)
+  bar.text = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  bar.text:SetPoint("CENTER")
+  bar.button = button
+  button:SetText("Scan")
+  bar:Hide()
+  button:Hide()
 end
 
-local function finishScan(reason)
-  if not scan then return end
+local function updateBar()
+  createBar()
+  if not (bar and scan) then return end
+  if scan.total then
+    bar:SetMinMaxValues(0, math.max(scan.total, 1))
+    bar:SetValue(scan.done)
+    local label = scan.phase == "books" and "Checking reagent listings" or "Pricing recipes"
+    bar.text:SetText(("%s %d/%d"):format(label, scan.done, scan.total))
+  else
+    bar:SetMinMaxValues(0, 1)
+    bar:SetValue(0)
+    bar.text:SetText(("Loading recipes (%d)"):format(#(C_AuctionHouse.GetBrowseResults() or {})))
+  end
+  bar.button:SetText("Stop")
+  bar.allKnown = nil
+  bar:Show()
+  bar.button:Show()
+end
+
+-- The bar between scans: text, full when filled. No text hides the bar
+-- and its button.
+local function showStatus(text, filled)
+  if not bar then return end
+  bar.allKnown = nil
+  bar:SetShown(text ~= nil)
+  bar.button:SetShown(text ~= nil)
+  if not text then return end
+  bar:SetMinMaxValues(0, 1)
+  bar:SetValue(filled and 1 or 0)
+  bar.text:SetText(text)
+  bar.button:SetText("Scan")
+end
+
+local function finishScan(text, filled)
   scan = nil
-  setButtonText()
-  if reason then msg(reason) end
+  showStatus(text, filled)
 end
 
--- Reagents and crafted items of every recipe in the browse results.
+-- Reagents and crafted items of every recipe in the browse results:
+-- { { id, name, reagent = true | nil }, ... }, recipes (with reagents),
+-- pending (item data still loading).
 local function buildItems()
   local items, seen, recipes, pending = {}, {}, 0, 0
-  local function add(name)
-    if name and not seen[key(name)] then
-      seen[key(name)] = true
-      items[#items + 1] = { id = idForName(name), name = name }
+  local function add(name, reagent)
+    if not name then return end
+    local item = seen[key(name)]
+    if not item then
+      item = { id = idForName(name), name = name }
+      seen[key(name)] = item
+      items[#items + 1] = item
     end
+    item.reagent = item.reagent or reagent
   end
   for _, entry in ipairs(C_AuctionHouse.GetBrowseResults() or {}) do
     local itemID = entry.itemKey and entry.itemKey.itemID
     if isRecipe(itemID) then
-      local lines = linesForItemID(itemID)
+      -- Pending: the item's data hasn't loaded yet. A loaded recipe with no
+      -- reagents (a skill book, say) isn't a craft: skipped.
+      local lines = GetItemInfo(itemID) and linesForItemID(itemID)
       local recipe = lines and parseRecipe(lines)
-      if recipe and #recipe.reagents > 0 and not recipe.incomplete then
+      if not lines or not lines[1] or lines[1] == "" or (recipe and recipe.incomplete) then
+        pending = pending + 1
+        RequestLoadItemDataByID(itemID)
+      elseif recipe and #recipe.reagents > 0 then
         recipes = recipes + 1
-        for _, reagent in ipairs(recipe.reagents) do add(reagent.name) end
+        for _, reagent in ipairs(recipe.reagents) do add(reagent.name, true) end
         local _, productName = resolveProduct(recipe)
         if not (recipe.productName or ""):match("^Enchant ") or productName then
           add(productName or recipe.productName)
         end
-      else
-        pending = pending + 1
-        RequestLoadItemDataByID(itemID)
       end
     end
   end
   return items, recipes, pending
 end
 
+-- Puts the player's search back on screen after the quick pass replaced it.
+local lastQuery, restoring
+local function restoreSearch()
+  if not (lastQuery and AuctionHouseFrame and AuctionHouseFrame:IsShown()) then return end
+  if C_AuctionHouse.IsThrottledMessageSystemReady and not C_AuctionHouse.IsThrottledMessageSystemReady() then
+    C_Timer.After(0.25, restoreSearch)
+    return
+  end
+  restoring = true
+  C_AuctionHouse.SendBrowseQuery(lastQuery)
+end
+
+-- Three phases: a quick pass prices every reagent and crafted item (25 per
+-- search, but it takes over the results list), the player's search is put
+-- back, then an order book pass reads every listing of each reagent (for
+-- buying several and undercuts) in the background. Items already done
+-- today are skipped, unless forced.
 local function startPricing(retries)
-  if not scan then return end
+  local mine = scan
+  if not mine then return end
   local items, recipes, pending = buildItems()
   -- Item data for some recipes may still be loading; give it a moment.
   if pending > 0 and (retries or 0) < 4 then
-    C_Timer.After(0.75, function() startPricing((retries or 0) + 1) end)
+    C_Timer.After(0.75, function() if scan == mine then startPricing((retries or 0) + 1) end end)
     return
   end
-  if recipes == 0 then
-    finishScan("No recipes in the current results. Pick a Recipes category (or search 'Pattern:') first.")
-    return
+  if recipes == 0 then finishScan("No recipes in these results"); return end
+
+  -- Skipped unless forced: for the quick pass, items Auctionator or our
+  -- searches priced today; for the order books, reagents with a full book
+  -- from today.
+  local today = date("%Y%m%d")
+  local function bookToday(id, full)
+    local book = Lib.Book(id)
+    return book and date("%Y%m%d", book.t) == today and not (full and book.quote)
   end
-  local force = scan.force
-  finishScan()
-  local count, reason = Lib.Search(items, { force = force, caller = ADDON })
+  local quickIDs, bookIDs = {}, {}
+  for _, item in ipairs(items) do
+    if item.id and (mine.force or not (bookToday(item.id) or Lib.PriceAge(item.id) == 0)) then
+      quickIDs[#quickIDs + 1] = item.id
+    end
+    if item.id and item.reagent and (mine.force or not bookToday(item.id, true)) then bookIDs[#bookIDs + 1] = item.id end
+  end
+  local function progress(phase)
+    return function(n, total)
+      if scan ~= mine then return end
+      mine.phase, mine.done, mine.total = phase, n, total
+      updateBar()
+    end
+  end
+  local function stopped(why, n, total)
+    if mine.replaced or why == "closed" then
+      finishScan() -- a newer search took over, or the AH closed
+    else
+      finishScan(("Stopped at %d/%d"):format(n, total))
+    end
+  end
+
+  local function runBooks()
+    local count, reason = Lib.ScanBooks(bookIDs, {
+      onProgress = progress("books"),
+      onDone = function(why, n, total)
+        if scan ~= mine then return end
+        if why == "done" then
+          finishScan(("Recipes priced (%d items)"):format(#items), true)
+        else
+          stopped(why, n, total)
+        end
+      end,
+    })
+    if not count then
+      finishScan(reason) -- e.g. ProfessionProfit's scan is running
+    elseif count == 0 then
+      finishScan(#quickIDs > 0 and ("Recipes priced (%d items)"):format(#items) or "Recipes already priced today", true)
+    else
+      progress("books")(0, count)
+    end
+  end
+
+  local count, reason = Lib.QuickScan(quickIDs, {
+    onProgress = progress("quick"),
+    onDone = function(why, n, total)
+      if scan ~= mine then return end
+      if not mine.replaced then restoreSearch() end
+      if why == "done" then
+        runBooks()
+      else
+        stopped(why, n, total)
+      end
+    end,
+  })
   if not count then
-    msg(reason)
+    finishScan(reason)
   elseif count == 0 then
-    msg(("Everything for these %d recipe(s) was priced today. Shift-click to search again anyway."):format(recipes))
+    runBooks()
   else
-    msg(("Searching %d item(s) for %d recipe(s) in Auctionator's Shopping tab%s."):format(count, recipes,
-      pending > 0 and (" (" .. pending .. " recipe(s) skipped, item data not loaded)") or ""))
+    progress("quick")(0, count)
   end
 end
 
 -- The AH only sends the first page of browse results until you scroll; keep
--- requesting more until the whole category is loaded.
+-- requesting more until all of them are loaded.
 local function loadAllResults()
-  if not scan then return end
-  if not AuctionHouseFrame:IsShown() then finishScan("Scan stopped: auction house closed."); return end
-  setButtonText()
-  if C_AuctionHouse.HasFullBrowseResults() or scan.loadTries > 60 then
+  local mine = scan
+  if not mine then return end
+  if not AuctionHouseFrame:IsShown() then finishScan(); return end
+  updateBar()
+  if C_AuctionHouse.HasFullBrowseResults() or mine.loadTries > 60 then
     startPricing()
     return
   end
+  local wait = 0.5
   if C_AuctionHouse.IsThrottledMessageSystemReady and not C_AuctionHouse.IsThrottledMessageSystemReady() then
-    C_Timer.After(0.25, loadAllResults)
-    return
+    wait = 0.25
+  else
+    mine.loadTries = mine.loadTries + 1
+    C_AuctionHouse.RequestMoreBrowseResults()
   end
-  scan.loadTries = scan.loadTries + 1
-  C_AuctionHouse.RequestMoreBrowseResults()
-  C_Timer.After(0.5, loadAllResults)
+  C_Timer.After(wait, function() if scan == mine then loadAllResults() end end)
 end
 
-local function startScan()
-  if scan then finishScan("Scan cancelled."); return end
-  if not (AuctionHouseFrame and AuctionHouseFrame:IsShown()) then
-    msg("Open the auction house first.")
-    return
+-- Prices the recipes in the current results; force: search items priced
+-- today too. Replaces a scan already running.
+-- Cancels our quick or order book pass (never ProfessionProfit's scan);
+-- its onDone ends the scan. Returns false when neither is running.
+local function cancelPass()
+  if not scan then return false end
+  if scan.phase == "quick" then Lib.CancelQuickScan(); return true end
+  if scan.phase == "books" then Lib.CancelBookScan(); return true end
+  return false
+end
+
+startScan = function(force)
+  if not (AuctionHouseFrame and AuctionHouseFrame:IsShown()) then return false end
+  if scan then
+    scan.replaced = true
+    if not cancelPass() then finishScan() end
   end
-  scan = { loadTries = 0, force = IsShiftKeyDown and IsShiftKeyDown() }
-  msg("Loading all results in this category...")
+  scan = { loadTries = 0, force = force }
   loadAllResults()
+  return true
 end
 
-local function createButton()
-  if scanButton or not AuctionHouseFrame then return end
-  scanButton = CreateFrame("Button", "RecipeProfitScanButton", AuctionHouseFrame, "UIPanelButtonTemplate")
-  scanButton:SetSize(140, 22)
-  scanButton:SetPoint("BOTTOMRIGHT", AuctionHouseFrame, "TOPRIGHT", -24, 2)
-  scanButton:SetScript("OnClick", function() startScan() end)
-  scanButton:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_TOP")
-    GameTooltip:AddLine("Price Recipes")
-    GameTooltip:AddLine("Loads every recipe in the current results, then searches the AH for all their reagents and crafted items through Auctionator (results show in its Shopping tab), so recipe tooltips show current cost and profit.", 1, 1, 1, true)
-    GameTooltip:AddLine("Items already priced today are skipped. Shift-click to search everything.", 0.7, 0.7, 0.7, true)
-    GameTooltip:Show()
+stopScan = function()
+  if not cancelPass() then finishScan("Stopped") end
+end
+
+-- Remember the player's search, to put it back after the quick pass. A
+-- search of theirs during the quick pass ends it (its results would be
+-- overwritten). Auctionator's full scan (an empty search with no category)
+-- is left alone.
+if C_AuctionHouse and C_AuctionHouse.SendBrowseQuery then
+  hooksecurefunc(C_AuctionHouse, "SendBrowseQuery", function(query)
+    if restoring then restoring = false; return end -- ours, putting the search back
+    local everything = type(query) == "table" and (query.searchString or "") == ""
+      and not (query.itemClassFilters and query.itemClassFilters[1])
+    if everything then return end
+    lastQuery = query
+    if scan and scan.phase == "quick" then
+      scan.replaced = true
+      Lib.CancelQuickScan()
+    end
   end)
-  scanButton:SetScript("OnLeave", GameTooltip_Hide)
-  setButtonText()
+end
+
+-- Between scans, the bar says whether the recipes on screen are missing
+-- prices (and so need a Scan); with no recipes on screen it's hidden.
+local checkToken = 0
+local function checkResults(retries)
+  if scan or not bar then return end
+  local items, recipes, pending = buildItems()
+  -- Some recipes' item data is still loading: count again shortly, for up
+  -- to 3 seconds; after that, go by the recipes that did load.
+  local waiting = pending > 0 and (retries or 0) < 10
+  if waiting then
+    local token = checkToken
+    C_Timer.After(0.3, function() if token == checkToken then checkResults((retries or 0) + 1) end end)
+  end
+  if recipes == 0 and not waiting then showStatus(); return end
+  local missing = 0
+  for _, item in ipairs(items) do
+    if priceMissing(item.id) then missing = missing + 1 end
+  end
+  if missing > 0 then
+    showStatus(("%d price%s missing: click Scan"):format(missing, missing == 1 and "" or "s"))
+  elseif waiting then
+    showStatus("Checking prices...")
+  else
+    showStatus(("Prices known for %d recipe%s"):format(recipes, recipes == 1 and "" or "s"), true)
+    bar.allKnown = true
+  end
+end
+
+-- Show or hide the bar as soon as results arrive (a cheap look for any
+-- recipe), then count missing prices once this batch of results settles.
+local function onBrowseResults()
+  if scan then return end
+  createBar()
+  if not bar then return end
+  local hasRecipes = false
+  for _, entry in ipairs(C_AuctionHouse.GetBrowseResults() or {}) do
+    if isRecipe(entry.itemKey and entry.itemKey.itemID) then hasRecipes = true; break end
+  end
+  if not hasRecipes then
+    showStatus()
+  elseif not bar:IsShown() then
+    showStatus("Checking prices...")
+  end
+  checkToken = checkToken + 1
+  local token = checkToken
+  C_Timer.After(0.1, function() if token == checkToken then checkResults() end end)
 end
 
 ------------------------------------------------------------------------------
@@ -662,22 +916,26 @@ frame:SetScript("OnEvent", function(_, event, ...)
       RecipeProfitDB = RecipeProfitDB or {}
       db = RecipeProfitDB
       db.names = db.names or {}
+      db.orderBooks = db.orderBooks or {}
+      Lib.SetBookStore(db.orderBooks)
       -- Prices now live in Auctionator; drop what older versions saved.
       db.prices, db.vendor, db.missing = nil, nil, nil
       hookTooltips()
     elseif name == "Blizzard_AuctionHouseUI" then
-      createButton()
+      createBar()
     end
   elseif not db then
     return
   elseif event == "AUCTION_HOUSE_SHOW" then
-    createButton()
+    createBar()
   elseif event == "AUCTION_HOUSE_CLOSED" then
-    if scan then finishScan("Scan stopped: auction house closed.") end
+    finishScan()
   elseif event == "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED" then
     learnBrowseNames(C_AuctionHouse.GetBrowseResults())
+    onBrowseResults()
   elseif event == "AUCTION_HOUSE_BROWSE_RESULTS_ADDED" then
     learnBrowseNames(...)
+    onBrowseResults()
   elseif event == "LOOT_OPENED" then
     recordLootRecipes()
   elseif event == "QUEST_DETAIL" or event == "QUEST_COMPLETE" then
@@ -696,7 +954,7 @@ SlashCmdList.RECIPEPROFIT = function(input)
   local cmd, rest = (input or ""):match("^%s*(%S*)%s*(.-)%s*$")
   cmd = cmd:lower()
   if cmd == "scan" then
-    startScan()
+    if not startScan(true) then msg("Open the auction house first.") end
   elseif cmd == "debug" then
     debugLines = not debugLines
     msg("debug " .. (debugLines and "on: hover a recipe to print its tooltip lines" or "off"))
@@ -711,7 +969,7 @@ SlashCmdList.RECIPEPROFIT = function(input)
     msg("Saved item names cleared.")
   else
     msg("commands:")
-    print("  /rp scan - same as the Price Recipes button")
+    print("  /rp scan - search the AH for every recipe in the current results, even items priced today")
     print("  /rp price <item name> - show the price used for an item")
     print("  /rp debug - print raw recipe tooltip lines (for troubleshooting)")
     print("  /rp reset - clear saved item names")
