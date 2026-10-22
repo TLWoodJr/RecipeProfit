@@ -711,7 +711,7 @@ SlashCmdList.RECIPEPROFIT = function(input)
     msg("Saved item names cleared.")
   else
     msg("commands:")
-    print("  /rp scan - price reagents/products for recipes in the current AH results")
+    print("  /rp scan - same as the Price Recipes button")
     print("  /rp price <item name> - show the price used for an item")
     print("  /rp debug - print raw recipe tooltip lines (for troubleshooting)")
     print("  /rp reset - clear saved item names")

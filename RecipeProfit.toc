@@ -1,8 +1,9 @@
 ## Interface: 16001
 ## Title: RecipeProfit
-## Notes: Hover a recipe to see reagent cost, crafted item price and profit. Scan button on the AH prices everything for the recipes you searched.
-## Author: woodt
+## Notes: Hover a recipe to see reagent cost, crafted item price, profit and where to get it. Price Recipes at the AH prices every recipe in the results.
+## Author: magnumwood
 ## Version: @project-version@
+## X-License: GPL-3.0
 ## Category-enUS: Auctions
 ## X-Category: Auction/Economy
 ## SavedVariables: RecipeProfitDB
