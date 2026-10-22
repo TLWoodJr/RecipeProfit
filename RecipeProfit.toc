@@ -6,6 +6,7 @@
 ## X-License: GPL-3.0
 ## Category-enUS: Auctions
 ## X-Category: Auction/Economy
+## X-Curse-Project-ID: 1759384
 ## SavedVariables: RecipeProfitDB
 ## Dependencies: Auctionator
 ## OptionalDeps: LibCraftProfit-1.0, ForeverDungeonJournal
